@@ -50,14 +50,25 @@ function buildGraph(data){
     const sid = "SW" + sw.switch;
     switchMap[sw.switch] = sid;
     nodes.push({ id: sid, label: sid, shape: "box", size: 24 });
-    const table = sw.learned_table || {};
-    Object.entries(table).forEach(([mac, port]) => {
-      const hid = mac;
-      if (!nodes.find(n => n.id === hid)) {
-        nodes.push({ id: hid, label: hid, shape: "ellipse", size: 18 });
-      }
-      edges.push({ from: sid, to: hid, label: "port " + port, arrows: "to" });
-    });
+    const table = sw.learned_table || sw.hosts || {};
+    // support both "learned_table" and "hosts" formats
+    if (Array.isArray(table)) {
+      table.forEach(h => {
+        const hid = h.mac;
+        if (!nodes.find(n => n.id === hid)) {
+          nodes.push({ id: hid, label: hid, shape: "ellipse", size: 18 });
+        }
+        edges.push({ from: sid, to: hid, label: "port " + h.port, arrows: "to" });
+      });
+    } else {
+      Object.entries(table).forEach(([mac, port]) => {
+        const hid = mac;
+        if (!nodes.find(n => n.id === hid)) {
+          nodes.push({ id: hid, label: hid, shape: "ellipse", size: 18 });
+        }
+        edges.push({ from: sid, to: hid, label: "port " + port, arrows: "to" });
+      });
+    }
   });
 
   (data.installed_flows || []).forEach(f => {
@@ -73,6 +84,22 @@ function buildGraph(data){
         color: { color: '#333' }
       });
     }
+  });
+
+  // new: add switch-switch links from topology API
+  (data.links || []).forEach(l => {
+    const fromId = switchMap[l.src_dpid] || ("SW" + l.src_dpid);
+    const toId = switchMap[l.dst_dpid] || ("SW" + l.dst_dpid);
+    // add nodes for switches if not present
+    if (!nodes.find(n => n.id === fromId)) nodes.push({ id: fromId, label: fromId, shape: "box", size: 24 });
+    if (!nodes.find(n => n.id === toId)) nodes.push({ id: toId, label: toId, shape: "box", size: 24 });
+    edges.push({
+      from: fromId,
+      to: toId,
+      label: "port " + l.src_port + "→" + l.dst_port,
+      color: { color: '#0077cc' },
+      arrows: "to"
+    });
   });
 
   return { nodes, edges };
@@ -97,10 +124,17 @@ function draw(visNodes, visEdges){
   }
 }
 
+// replaced refresh to request both topology and flows and merge them
 async function refresh(){
   try {
+    const topo = await fetchJSON("/topology");
     const flows = await fetchJSON("/flows");
-    const g = buildGraph(flows);
+    const combined = {
+      switches: topo.switches || [],
+      links: topo.links || [],
+      installed_flows: flows.installed_flows || []
+    };
+    const g = buildGraph(combined);
     draw(g.nodes, g.edges);
     setStatus("Data loaded");
   } catch (err) {
@@ -112,7 +146,7 @@ async function refresh(){
 async function pingAll(){
   setStatus("Pinging all hosts...");
   try {
-    // send a GET or POST request to /pingall
+    // send a POST request to /pingall
     await fetchJSON("/pingall", { method: "POST" });
     // refresh topology & flows after ping completes
     await refresh();
