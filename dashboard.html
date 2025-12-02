@@ -5,11 +5,15 @@
   <title>Ryu Dashboard — Simple Topology & Flows</title>
   <script src="https://unpkg.com/vis-network@9.1.0/dist/vis-network.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; margin: 12px; }
-    #network { width: 100%; height: 700px; border: 1px solid #ddd; margin-top: 8px; }
-    .status { margin-bottom: 8px; }
-    .small { font-size: 0.9em; color: #666; }
-    button { padding: 6px 12px; font-size: 1em; }
+    body { font-family: Arial, sans-serif; margin: 12px; font-size: 15px; background: #f5f7fa; color: #122; }
+    /* increased height and padding for the graph so labels/edges have more room */
+    #network { width: 100%; height: 980px; border: 1px solid #e0e6ef; margin-top: 10px; background: #ffffff; border-radius: 6px; box-shadow: 0 2px 8px rgba(16,32,80,0.08); padding: 6px; }
+    .status { margin-bottom: 8px; font-weight: 600; }
+    .small { font-size: 0.95em; color: #667; }
+    button { padding: 9px 16px; font-size: 1em; border-radius: 5px; background: #0077cc; color: white; border: none; cursor: pointer; }
+    button:hover { background: #005fa3; }
+    .legend { margin-top: 8px; font-size: 0.95em; color: #334; }
+    .legend .item { display:inline-block; margin-right:12px; }
   </style>
 </head>
 <body>
@@ -49,41 +53,113 @@ function buildGraph(data){
   (data.switches || []).forEach(sw => {
     const sid = "SW" + sw.switch;
     switchMap[sw.switch] = sid;
-    nodes.push({ id: sid, label: sid, shape: "box", size: 24 });
+    // larger, high-contrast switch nodes
+    nodes.push({
+      id: sid,
+      label: sid,
+      shape: "box",
+      size: 36,
+      color: { background: '#ffd966', border: '#c98f00' },
+      font: { color: '#111', size: 14, face: 'Arial' }
+    });
     const table = sw.learned_table || sw.hosts || {};
     // support both "learned_table" and "hosts" formats
     if (Array.isArray(table)) {
       table.forEach(h => {
         const hid = h.mac;
         if (!nodes.find(n => n.id === hid)) {
-          nodes.push({ id: hid, label: hid, shape: "ellipse", size: 18 });
+          nodes.push({
+            id: hid,
+            label: hid,
+            shape: "ellipse",
+            size: 28,
+            color: { background: '#ffffff', border: '#0077cc' },
+            font: { color: '#003b5c', size: 12 }
+          });
         }
-        edges.push({ from: sid, to: hid, label: "port " + h.port, arrows: "to" });
+        edges.push({
+          from: sid,
+          to: hid,
+          label: "port " + h.port,
+          arrows: "to",
+          width: 2,
+          color: { color: '#0077cc' },
+          font: { align: 'middle', size: 12 }
+        });
       });
     } else {
       Object.entries(table).forEach(([mac, port]) => {
         const hid = mac;
         if (!nodes.find(n => n.id === hid)) {
-          nodes.push({ id: hid, label: hid, shape: "ellipse", size: 18 });
+          nodes.push({
+            id: hid,
+            label: hid,
+            shape: "ellipse",
+            size: 28,
+            color: { background: '#ffffff', border: '#0077cc' },
+            font: { color: '#003b5c', size: 12 }
+          });
         }
-        edges.push({ from: sid, to: hid, label: "port " + port, arrows: "to" });
+        edges.push({
+          from: sid,
+          to: hid,
+          label: "port " + port,
+          arrows: "to",
+          width: 2,
+          color: { color: '#0077cc' },
+          font: { align: 'middle', size: 12 }
+        });
       });
     }
   });
 
-  (data.installed_flows || []).forEach(f => {
-    const srcExists = nodes.find(n => n.id === f.eth_src);
-    const dstExists = nodes.find(n => n.id === f.eth_dst);
-    if (srcExists && dstExists) {
-      edges.push({
-        from: f.eth_src,
-        to: f.eth_dst,
-        arrows: "to",
-        dashes: true,
-        label: "flow on SW" + f.switch,
-        color: { color: '#333' }
-      });
+  // handle installed flows (always add edges; create placeholders; avoid exact overlap)
+  console.log('nodes before flows:', nodes.map(n => n.id));
+  console.log('installed_flows:', data.installed_flows);
+
+  // count duplicates per unordered host pair so we can separate repeated edges
+  const pairCounts = {};
+
+  (data.installed_flows || []).forEach((f, idx) => {
+    const src = f.eth_src || (f.match && (f.match.dl_src || f.match['eth_src'])) || f.src;
+    const dst = f.eth_dst || (f.match && (f.match.dl_dst || f.match['eth_dst'])) || f.dst;
+    if (!src || !dst) return;
+
+    if (!nodes.find(n => n.id === src)) {
+      nodes.push({ id: src, label: src, shape: 'ellipse', size: 30, color: { background: '#fff', border: '#888' }, font: { size: 12 } });
     }
+    if (!nodes.find(n => n.id === dst)) {
+      nodes.push({ id: dst, label: dst, shape: 'ellipse', size: 30, color: { background: '#fff', border: '#888' }, font: { size: 12 } });
+    }
+
+    // unordered key so src→dst and dst→src duplicates are grouped
+    const key = [src, dst].sort().join('|');
+    const seq = (pairCounts[key] = (pairCounts[key] || 0) + 1) - 1;
+
+    // much stronger separation: increase base and step so duplicates spread far apart
+    const base = 0.6;          // larger base curvature
+    const step = 0.45;         // larger incremental step per duplicate
+    let roundness = base + seq * step;
+    // allow larger cap for many duplicates
+    if (roundness > 6.0) roundness = 6.0;
+
+    const smoothType = (seq % 2) ? 'curvedCW' : 'curvedCCW';
+    const sign = (seq % 2) ? 1 : -1;
+
+    edges.push({
+      id: 'flow_' + idx + '_' + src + '_' + dst,
+      from: src,
+      to: dst,
+      arrows: "to",
+      dashes: true,
+      label: "flow on SW" + (f.switch || ''),
+      width: 3.5,
+      color: { color: '#d9534f' },
+      // stronger halo and slightly larger font keeps labels readable
+      font: { size: 13, color: '#7a1f1f', strokeWidth: 5, strokeColor: '#ffffff' },
+      // use the seq-based roundness (signed) so many duplicates fan out on both sides
+      smooth: { enabled: true, type: smoothType, roundness: roundness * sign }
+    });
   });
 
   // new: add switch-switch links from topology API
@@ -91,14 +167,30 @@ function buildGraph(data){
     const fromId = switchMap[l.src_dpid] || ("SW" + l.src_dpid);
     const toId = switchMap[l.dst_dpid] || ("SW" + l.dst_dpid);
     // add nodes for switches if not present
-    if (!nodes.find(n => n.id === fromId)) nodes.push({ id: fromId, label: fromId, shape: "box", size: 24 });
-    if (!nodes.find(n => n.id === toId)) nodes.push({ id: toId, label: toId, shape: "box", size: 24 });
+    if (!nodes.find(n => n.id === fromId)) nodes.push({
+      id: fromId,
+      label: fromId,
+      shape: "box",
+      size: 36,
+      color: { background: '#ffd966', border: '#c98f00' },
+      font: { color: '#111', size: 14 }
+    });
+    if (!nodes.find(n => n.id === toId)) nodes.push({
+      id: toId,
+      label: toId,
+      shape: "box",
+      size: 36,
+      color: { background: '#ffd966', border: '#c98f00' },
+      font: { color: '#111', size: 14 }
+    });
     edges.push({
       from: fromId,
       to: toId,
       label: "port " + l.src_port + "→" + l.dst_port,
       color: { color: '#0077cc' },
-      arrows: "to"
+      arrows: "to",
+      width: 2.5,
+      font: { size: 12, align: 'top', color: '#074' }
     });
   });
 
@@ -112,15 +204,38 @@ function draw(visNodes, visEdges){
     edges: new vis.DataSet(visEdges)
   };
   const options = {
-    physics: { stabilization: true },
-    edges: { smooth: { type: "cubicBezier" }, font: { align: "top" } },
-    nodes: { font: { size: 12 } }
+    physics: {
+      stabilization: true,
+      // increase springLength and repulsion so nodes are spaced farther apart
+      barnesHut: { gravitationalConstant: -3000, springLength: 500, springConstant: 0.005 }
+    },
+    edges: {
+      smooth: { type: "cubicBezier" },
+      font: { align: "top", size: 13 },
+      color: { inherit: false }
+    },
+    nodes: {
+      font: { size: 14, face: 'Arial' },
+      scaling: { min: 20, max: 60 }
+    },
+    interaction: {
+      hover: true,
+      tooltipDelay: 100,
+      zoomView: true,
+      dragView: true
+    },
+    manipulation: false
   };
-
+ 
   if (!network) {
     network = new vis.Network(container, data, options);
+    // zoom slightly in so nodes and labels are larger on first load
+    network.moveTo({ scale: 1.2 });
+    network.setOptions({ layout: { improvedLayout: true } });
   } else {
     network.setData(data);
+    // when updating, gently zoom to keep readability
+    network.moveTo({ scale: 1.15 });
   }
 }
 
