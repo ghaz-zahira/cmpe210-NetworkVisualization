@@ -1,4 +1,4 @@
-## Read Me
+Read Me:
 Base commands for running things:
 
 Terminal A: (controller start up)
@@ -15,3 +15,7 @@ python3 -m http.server 8081
 
 In the Browser to view the dashboard: 
 http://127.0.0.1:8081/dashboard.html
+
+
+NOTE: Prior to rerunning after changes to controller file please run:
+sudo mn -c
