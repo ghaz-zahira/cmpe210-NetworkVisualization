@@ -6,14 +6,43 @@
   <script src="https://unpkg.com/vis-network@9.1.0/dist/vis-network.min.js"></script>
   <style>
     body { font-family: Arial, sans-serif; margin: 12px; font-size: 15px; background: #f5f7fa; color: #122; }
-    /* increased height and padding for the graph so labels/edges have more room */
-    #network { width: 100%; height: 980px; border: 1px solid #e0e6ef; margin-top: 10px; background: #ffffff; border-radius: 6px; box-shadow: 0 2px 8px rgba(16,32,80,0.08); padding: 6px; }
-    .status { margin-bottom: 8px; font-weight: 600; }
-    .small { font-size: 0.95em; color: #667; }
-    button { padding: 9px 16px; font-size: 1em; border-radius: 5px; background: #0077cc; color: white; border: none; cursor: pointer; }
-    button:hover { background: #005fa3; }
-    .legend { margin-top: 8px; font-size: 0.95em; color: #334; }
-    .legend .item { display:inline-block; margin-right:12px; }
+    /* layout: graph on left, flow panel on the right */
+    #network { width: calc(100% - 380px); height: 980px; border: 1px solid #e0e6ef; margin-top: 10px; background: #ffffff; border-radius: 6px; box-shadow: 0 2px 8px rgba(16,32,80,0.08); padding: 6px; position: relative; float: left; }
+    #sidePanel {
+      width: 360px;
+      position: absolute;
+      right: 12px;
+      top: 86px; /* below header/status */
+      bottom: 12px;
+      background: #ffffff;
+      border: 1px solid #e0e6ef;
+      border-radius: 6px;
+      box-shadow: 0 6px 18px rgba(16,32,80,0.10);
+      padding: 12px;
+      overflow: auto;
+      display: none;
+      z-index: 9998;
+    }
+    #sidePanel .closeBtn { position:absolute; right:8px; top:8px; cursor:pointer; border:none; background:transparent; font-size:18px; color:#666; }
+    #sideTitle { margin-top:0; margin-bottom:8px; font-size:16px; }
+
+    /* popup styles */
+    #edgePopup {
+      display: none;
+      position: absolute;
+      z-index: 9999;
+      background: #ffffff;
+      border: 1px solid #d0d7e2;
+      box-shadow: 0 6px 16px rgba(16,32,80,0.12);
+      padding: 10px 12px;
+      border-radius: 6px;
+      min-width: 180px;
+      max-width: 320px;
+      font-size: 13px;
+      color: #112;
+    }
+    #edgePopup .title { font-weight:700; margin-bottom:6px; color:#7a1f1f; }
+    #edgePopup .closeBtn { position: absolute; right: 6px; top: 6px; cursor: pointer; color: #777; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -25,9 +54,26 @@
   <button id="pingBtn">Ping All</button>
   <div id="network"></div>
 
+  <!-- right side panel: show flow table for selected switch -->
+  <div id="sidePanel" role="region" aria-hidden="true">
+    <button class="closeBtn" id="sideClose">×</button>
+    <h3 id="sideTitle">Switch — Flow table</h3>
+    <div id="sideBody" class="small">Click a switch (e.g. SW1) to view its installed flows here.</div>
+  </div>
+
+  <!-- popup shown when an edge (flow) is clicked -->
+  <div id="edgePopup" role="dialog" aria-hidden="true">
+    <span class="closeBtn" id="edgePopupClose">×</span>
+    <div class="title" id="edgePopupTitle"></div>
+    <div id="edgePopupBody"></div>
+  </div>
+
 <script>
 const API_BASE = "http://127.0.0.1:8080";
 let network = null;
+// hold last fetched data so side panel can reference flows/stats when user clicks
+window.currentFlows = [];
+window.currentStatsMap = {};
 
 function setStatus(txt, ok=true){
   const s = document.getElementById('status');
@@ -45,7 +91,7 @@ async function fetchJSON(path, options){
   }
 }
 
-function buildGraph(data){
+function buildGraph(data, statsMap){
   const nodes = [];
   const edges = [];
   const switchMap = {};
@@ -146,10 +192,13 @@ function buildGraph(data){
     const smoothType = (seq % 2) ? 'curvedCW' : 'curvedCCW';
     const sign = (seq % 2) ? 1 : -1;
 
+    const stat = statsMap[(f.switch || '') + '|' + src + '|' + dst];
+    const title = stat ? `packets: ${stat.packets}\nbytes: ${stat.bytes}` : 'no stats';
     edges.push({
       id: 'flow_' + idx + '_' + src + '_' + dst,
       from: src,
       to: dst,
+      title: title,    // vis-network shows this on hover
       arrows: "to",
       dashes: true,
       label: "flow on SW" + (f.switch || ''),
@@ -232,27 +281,170 @@ function draw(visNodes, visEdges){
     // zoom slightly in so nodes and labels are larger on first load
     network.moveTo({ scale: 1.2 });
     network.setOptions({ layout: { improvedLayout: true } });
-  } else {
-    network.setData(data);
-    // when updating, gently zoom to keep readability
-    network.moveTo({ scale: 1.15 });
-  }
+
+    // show a popup when clicking an edge (flow)
+    const popup = document.getElementById('edgePopup');
+    const popupTitle = document.getElementById('edgePopupTitle');
+    const popupBody = document.getElementById('edgePopupBody');
+    const popupClose = document.getElementById('edgePopupClose');
+
+    function showEdgePopup(edge, domPos) {
+      // build content
+      const title = edge.label || ('Flow on ' + (edge.switch || 'SW?'));
+      const lines = [];
+      if (edge.title) {
+        // edge.title may contain newline-separated data
+        lines.push(...String(edge.title).split('\n'));
+      }
+      // extra fields if present
+      if (edge.packets !== undefined || edge.bytes !== undefined) {
+        lines.push(`packets: ${edge.packets || 0}`);
+        lines.push(`bytes: ${edge.bytes || 0}`);
+      }
+
+      popupTitle.textContent = title;
+      popupBody.innerHTML = lines.map(l => `<div>${l}</div>`).join('');
+
+      // position relative to the network container (network DIV is position:relative)
+      const rect = container.getBoundingClientRect();
+      let left = domPos.x + 8; // small offset
+      let top = domPos.y + 8;
+      // keep inside container bounds
+      const popupWidth = 320;
+      const popupHeight = 140;
+      if (left + popupWidth > rect.width) left = rect.width - popupWidth - 8;
+      if (top + popupHeight > rect.height) top = rect.height - popupHeight - 8;
+
+      popup.style.left = left + 'px';
+      popup.style.top = top + 'px';
+      popup.style.display = 'block';
+      popup.setAttribute('aria-hidden', 'false');
+    }
+
+    function hideEdgePopup() {
+      popup.style.display = 'none';
+      popup.setAttribute('aria-hidden', 'true');
+    }
+
+    popupClose.addEventListener('click', hideEdgePopup);
+
+    // click handler: show popup for edge clicks, hide otherwise
+    network.on('click', function(params) {
+      // node clicked: possibly a switch node (ids like "SW1")
+      if (params.nodes && params.nodes.length) {
+        const nodeId = params.nodes[0];
+        if (String(nodeId).startsWith('SW')) {
+          // show flow table for this switch in the right side panel
+          showSwitchPanel(nodeId);
+          return;
+        }
+        // otherwise hide popup (we only show flows for switches or edges)
+        hideEdgePopup();
+        return;
+      }
+
+      // edge clicked: show existing edge popup (flows/edge details)
+      if (params.edges && params.edges.length) {
+        const edgeId = params.edges[0];
+        const edge = network.body.data.edges.get(edgeId);
+        // enrich edge object with parsed stats if the title string uses "packets/bytes"
+        if (edge && edge.title) {
+          const parts = String(edge.title).split('\n');
+          parts.forEach(p => {
+            const m = p.match(/\s*(packets|bytes)\s*:\s*(\d+)/i);
+            if (m) edge[m[1].toLowerCase()] = Number(m[2]);
+          });
+        }
+        showEdgePopup(edge, params.pointer.DOM);
+      } else {
+        hideEdgePopup();
+      }
+    });
+
+    // hide popup on drag/zoom so it doesn't float in wrong place
+    network.on('dragStart', hideEdgePopup);
+    network.on('zoom', hideEdgePopup);
+   } else {
+     network.setData(data);
+     // when updating, gently zoom to keep readability
+     network.moveTo({ scale: 1.15 });
+   }
 }
+
+// show popup listing installed flows for a switch node
+function showSwitchPanel(nodeId) {
+  const panel = document.getElementById('sidePanel');
+  const title = document.getElementById('sideTitle');
+  const body = document.getElementById('sideBody');
+  const dpid = nodeId.replace(/^SW/, '');
+
+  title.textContent = `Switch ${nodeId} — Flow table`;
+
+  const flows = (window.currentFlows || []).filter(f => String(f.switch) === String(dpid));
+  if (flows.length === 0) {
+    body.innerHTML = '<div class="small">No installed flows for this switch.</div>';
+  } else {
+    const rows = flows.map((f, i) => {
+      const src = f.eth_src || (f.match && (f.match.dl_src || f.match['eth_src'])) || '';
+      const dst = f.eth_dst || (f.match && (f.match.dl_dst || f.match['eth_dst'])) || '';
+      const key = (f.switch || '') + '|' + src + '|' + dst;
+      const stat = window.currentStatsMap[key] || {};
+      return `<tr>
+                <td style="padding:6px 8px;border-bottom:1px solid #eee">${i+1}</td>
+                <td style="padding:6px 8px;border-bottom:1px solid #eee">${src}</td>
+                <td style="padding:6px 8px;border-bottom:1px solid #eee">${dst}</td>
+                <td style="padding:6px 8px;border-bottom:1px solid #eee">${stat.packets || 0}</td>
+                <td style="padding:6px 8px;border-bottom:1px solid #eee">${stat.bytes || 0}</td>
+              </tr>`;
+    }).join('');
+    body.innerHTML = `<div style="max-height:100%;overflow:auto">
+        <table style="border-collapse:collapse;width:100%;font-size:13px">
+          <thead><tr style="text-align:left;color:#444"><th style="padding:6px 8px">#</th><th style="padding:6px 8px">src</th><th style="padding:6px 8px">dst</th><th style="padding:6px 8px">pkts</th><th style="padding:6px 8px">bytes</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  panel.style.display = 'block';
+  panel.setAttribute('aria-hidden', 'false');
+}
+
+// side panel close button
+document.getElementById('sideClose').addEventListener('click', function() {
+  const panel = document.getElementById('sidePanel');
+  panel.style.display = 'none';
+  panel.setAttribute('aria-hidden', 'true');
+});
 
 // replaced refresh to request both topology and flows and merge them
 async function refresh(){
   try {
     const topo = await fetchJSON("/topology");
     const flows = await fetchJSON("/flows");
-    const combined = {
-      switches: topo.switches || [],
-      links: topo.links || [],
-      installed_flows: flows.installed_flows || []
-    };
-    const g = buildGraph(combined);
+    const stats = await fetchJSON("/flow_stats"); // new code
+
+    // normalize keys: lowercase MACs/IDs so frontend and controller match
+    function norm(x){ return (x || "").toString().trim().toLowerCase(); }
+
+    const statsMap = {};
+    (stats || []).forEach(s => {
+      // log each stat for debugging
+      console.log("flow_stat:", s);
+      const key = `${s.switch}|${norm(s.eth_src)}|${norm(s.eth_dst)}`;
+      statsMap[key] = s;
+    });
+
+    // keep current data globally so click handlers can show per-switch info
+    window.currentFlows = flows.installed_flows || [];
+    window.currentStatsMap = statsMap;
+
+    // when building graph, use normalized keys too (buildGraph already reads statsMap)
+    const combined = { switches: topo.switches || [], links: topo.links || [], installed_flows: flows.installed_flows || [] };
+    const g = buildGraph(combined, statsMap);
     draw(g.nodes, g.edges);
     setStatus("Data loaded");
   } catch (err) {
+    console.error("refresh error:", err);
     setStatus("Error: " + err.message, false);
   }
 }
