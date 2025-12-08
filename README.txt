@@ -1,4 +1,5 @@
 Read Me:
+---RYU Controller Instructions----
 Base commands for running things:
 
 Terminal A: (controller start up)
@@ -20,7 +21,7 @@ http://127.0.0.1:8081/dashboard.html
 NOTE: Prior to rerunning after changes to controller file please run:
 sudo mn -c
 
-
+---PHP Controller Instructions---
 Below are the instructions for running PHP controller to visualize the network through LLDP technology
 
 Terminal A: Go to Path: sudo mn -c and sudo pkill -f controller_of13.php || true
