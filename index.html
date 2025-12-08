@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>LLDP Topology</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #network { width: 100%; height: 100%; }
+    #legend {
+      position: absolute; top: 10px; left: 10px; background: #fff; padding: 8px 10px; border: 1px solid #ddd; font: 14px sans-serif;
+      border-radius: 6px;
+    }
+  </style>
+  <!-- vis-network standalone build -->
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+  <div id="legend">
+    <strong>LLDP Topology</strong><br/>
+    Arrows point from <em>LLDP sender (src)</em> to <em>receiver (dst)</em><br/>
+    Edge label = source port (e.g., p3)
+  </div>
+  <div id="network"></div>
+
+  <script>
+    const container = document.getElementById('network');
+    let nodes = new vis.DataSet([]);
+    let edges = new vis.DataSet([]);
+    const network = new vis.Network(container, { nodes, edges }, {
+      physics: { stabilization: true, barnesHut: { gravitationalConstant: -3000 } },
+      interaction: { hover: true },
+      layout: { improvedLayout: true }
+    });
+
+    async function loadTopology() {
+      try {
+        const res = await fetch('topology.json', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        // diff update (id fields must be stable)
+        nodes.update(data.nodes);
+        const newIds = new Set(data.nodes.map(n => n.id));
+        nodes.forEach(n => { if (!newIds.has(n.id)) nodes.remove(n.id); });
+
+        edges.update(data.edges);
+        const eIds = new Set(data.edges.map(e => e.id));
+        edges.forEach(e => { if (!eIds.has(e.id)) edges.remove(e.id); });
+      } catch(e) {
+        // ignore transient fetch errors
+      }
+    }
+
+    // initial + periodic refresh
+    loadTopology();
+    setInterval(loadTopology, 2000);
+  </script>
+</body>
+</html>
